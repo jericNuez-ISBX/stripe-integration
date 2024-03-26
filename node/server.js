@@ -1,11 +1,9 @@
 const express = require("express");
-const cors = require("cors");
+// const cors = require("cors");
 const app = express();
 const { resolve } = require("path");
 // Replace if using a different env file or config
 const env = require("dotenv").config({ path: "./.env" });
-const calculateTax = false;
-
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16",
   appInfo: {
@@ -40,137 +38,16 @@ app.get("/config", (req, res) => {
   });
 });
 
-const calculate_tax = async (orderAmount, currency) => {
-  const taxCalculation = await stripe.tax.calculations.create({
-    currency,
-    customer_details: {
-      address: {
-        line1: "10709 Cleary Blvd",
-        city: "Plantation",
-        state: "FL",
-        postal_code: "33322",
-        country: "US"
-      },
-      address_source: "shipping"
-    },
-    line_items: [
-      {
-        amount: orderAmount,
-        reference: "ProductRef",
-        tax_behavior: "exclusive",
-        tax_code: "txcd_30011000"
-      }
-    ]
+app.post("/create-checkout-session", async (req, res) => {
+  const session = await stripe.checkout.sessions.create({
+    payment_method_types: ["card"],
+    mode: "setup",
+    ui_mode: "embedded",
+    return_url:
+      "https://example.com/checkout/return?session_id={CHECKOUT_SESSION_ID}"
   });
 
-  return taxCalculation;
-};
-
-app.post("/create-payment-intent", async (req, res) => {
-  const { paymentMethodType, currency, paymentMethodOptions } = req.body;
-
-  // Each payment method type has support for different currencies. In order to
-  // support many payment method types and several currencies, this server
-  // endpoint accepts both the payment method type and the currency as
-  // parameters. To get compatible payment method types, pass
-  // `automatic_payment_methods[enabled]=true` and enable types in your dashboard
-  // at https://dashboard.stripe.com/settings/payment_methods.
-  //
-  // Some example payment method types include `card`, `ideal`, and `link`.
-  let orderAmount = 1400;
-  let params = {};
-
-  if (calculateTax) {
-    let taxCalculation = await calculate_tax(orderAmount, currency);
-    params = {
-      payment_method_types:
-        paymentMethodType === "link" ? ["link", "card"] : [paymentMethodType],
-      amount: taxCalculation.amount_total,
-      currency: currency,
-      metadata: { tax_calculation: taxCalculation.id }
-    };
-  } else {
-    params = {
-      payment_method_types:
-        paymentMethodType === "link" ? ["link", "card"] : [paymentMethodType],
-      amount: orderAmount,
-      currency: currency
-    };
-  }
-  // If this is for an ACSS payment, we add payment_method_options to create
-  // the Mandate.
-  if (paymentMethodType === "acss_debit") {
-    params.payment_method_options = {
-      acss_debit: {
-        mandate_options: {
-          payment_schedule: "sporadic",
-          transaction_type: "personal"
-        }
-      }
-    };
-  } else if (paymentMethodType === "konbini") {
-    /**
-     * Default value of the payment_method_options
-     */
-    params.payment_method_options = {
-      konbini: {
-        product_description: "Tシャツ",
-        expires_after_days: 3
-      }
-    };
-  } else if (paymentMethodType === "customer_balance") {
-    params.payment_method_data = {
-      type: "customer_balance"
-    };
-    params.confirm = true;
-    params.customer =
-      req.body.customerId ||
-      (await stripe.customers.create().then(data => data.id));
-  }
-
-  /**
-   * If API given this data, we can overwride it
-   */
-  if (paymentMethodOptions) {
-    params.payment_method_options = paymentMethodOptions;
-  }
-
-  // Create a PaymentIntent with the amount, currency, and a payment method type.
-  //
-  // See the documentation [0] for the full list of supported parameters.
-  //
-  // [0] https://stripe.com/docs/api/payment_intents/create
-  try {
-    const paymentIntent = await stripe.paymentIntents.create(params);
-
-    // Send publishable key and PaymentIntent details to client
-    res.send({
-      clientSecret: paymentIntent.client_secret,
-      nextAction: paymentIntent.next_action
-    });
-  } catch (e) {
-    return res.status(400).send({
-      error: {
-        message: e.message
-      }
-    });
-  }
-});
-
-app.get("/payment/next", async (req, res) => {
-  const intent = await stripe.paymentIntents.retrieve(
-    req.query.payment_intent,
-    {
-      expand: ["payment_method"]
-    }
-  );
-
-  res.redirect(`/success?payment_intent_client_secret=${intent.client_secret}`);
-});
-
-app.get("/success", async (req, res) => {
-  const path = resolve(process.env.STATIC_DIR + "/success.html");
-  res.sendFile(path);
+  res.send({ clientSecret: session.client_secret });
 });
 
 app.listen(4242, () =>
